@@ -14,12 +14,13 @@
 //                                              can later read (zc#### -> id/meta_url)
 //
 // Build (MSYS2 ucrt64):
-//   g++ -std=c++20 SniffIHeartRadio.cpp -o SniffIHeartRadio.exe -lwininet
+//   g++ -std=c++20 SniffIHeartRadio.cpp IHeartRadio.cpp -o SniffIHeartRadio.exe -lwininet
 //   (Uses the nlohmann single-header json.hpp sitting next to this .cpp. If it
 //    lives elsewhere, add -I<dir-containing-json.hpp>.)
 //
 // Usage:
-//   SniffIHeartRadio.exe -S https://stream.revma.ihrhls.com/zc4366/hls.m3u8
+//   SniffIHeartRadio.exe -S https://stream.revma.ihrhls.com/zc4366/hls.m3u8   (exhaustive sniff)
+//   SniffIHeartRadio.exe -M https://stream.revma.ihrhls.com/zc4366/hls.m3u8   (test IHeartRadio module)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <windows.h>
@@ -35,6 +36,7 @@
 #include <fstream>
 
 #include "json.hpp"        // nlohmann single-header (sits next to this .cpp in E:\code)
+#include "IHeartRadio.h"   // the production module — -M mode exercises it
 using json = nlohmann::json;
 
 // ── Dual logging: stdout + %TEMP%\re-moct-iheartbeat.log ─────────────────────
@@ -58,6 +60,24 @@ static void logf(const char* fmt, ...) {
     if (!g_logpath.empty()) {
         FILE* f = std::fopen(g_logpath.c_str(), "a");
         if (f) { std::fputs(buf, f); std::fputs("\n", f); std::fclose(f); }
+    }
+}
+
+// Truncate the log if its last-write date isn't today, so it never grows
+// unbounded across days. Same-day reruns still append. Call once at startup,
+// before any logf().
+static void resetLogIfStale(const std::string& path) {
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &fa))
+        return;                                   // no file yet -> logf creates it fresh
+    SYSTEMTIME lf{}; FILETIME lft{};
+    if (!FileTimeToLocalFileTime(&fa.ftLastWriteTime, &lft) || !FileTimeToSystemTime(&lft, &lf))
+        return;                                   // can't read date -> leave as-is
+    SYSTEMTIME now{}; GetLocalTime(&now);
+    bool same_day = (lf.wYear == now.wYear && lf.wMonth == now.wMonth && lf.wDay == now.wDay);
+    if (!same_day) {
+        FILE* f = std::fopen(path.c_str(), "w");  // truncate -> fresh day
+        if (f) std::fclose(f);
     }
 }
 
@@ -206,19 +226,7 @@ static bool extractZc(const std::string& url, std::string& zc_out, long& num_out
     return true;
 }
 
-int main(int argc, char** argv) {
-    g_logpath = tempDir() + "re-moct-iheartbeat.log";
-
-    if (argc < 3 || std::string(argv[1]) != "-S") {
-        std::fprintf(stderr,
-            "SniffIHeartRadio - iHeart now-playing API prober\n"
-            "Usage: %s -S <iheart-stream-url>\n"
-            "Example: %s -S https://stream.revma.ihrhls.com/zc4366/hls.m3u8\n",
-            argv[0], argv[0]);
-        return 2;
-    }
-    std::string url = argv[2];
-
+static int runSniff(const std::string& url) {
     logf("==================================================================");
     logf("SniffIHeartRadio  run=%s", nowStamp().c_str());
     logf("input url: %s", url.c_str());
@@ -305,3 +313,51 @@ int main(int argc, char** argv) {
     InternetCloseHandle(hInet);
     return good_meta_url.empty() ? 1 : 0;
 }
+
+// ── -M mode: exercise the ACTUAL IHeartRadio module (resolve + poll) ─────────
+// Proves the production module compiles and produces correct now-playing, using
+// the exact code RE-MOCT will call. Routes the module's diagnostics into the
+// same iheartbeat log.
+static int runModuleTest(const std::string& url) {
+    logf("==================================================================");
+    logf("SniffIHeartRadio MODULE TEST (-M)  run=%s", nowStamp().c_str());
+    logf("input url: %s", url.c_str());
+    logf("isIHeartUrl: %s", IHeartRadio::isIHeartUrl(url) ? "yes" : "no");
+
+    IHeartRadio ihr;
+    ihr.setLogger([](const std::string& s){ logf("    %s", s.c_str()); });
+
+    logf("--- resolve() ---");
+    bool ok = ihr.resolve(url);
+    logf("resolved=%s station_id=%ld name=\"%s\"",
+         ok ? "true" : "false", ihr.stationId(), ihr.stationName().c_str());
+    if (!ok) { logf("resolve failed; nothing to poll."); return 1; }
+
+    logf("--- pollNowPlaying() ---");
+    std::string np = ihr.pollNowPlaying();
+    if (np.empty()) logf("now-playing: (empty - ad/talk break, or error; caller shows live stream)");
+    else            logf("now-playing: %s", np.c_str());
+
+    logf("sidecar: %s", IHeartRadio::sidecarPath().c_str());
+    logf("==================================================================");
+    return np.empty() ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    g_logpath = tempDir() + "re-moct-iheartbeat.log";
+    resetLogIfStale(g_logpath);   // fresh log on a new day; same-day reruns append
+
+    if (argc < 3 || (std::string(argv[1]) != "-S" && std::string(argv[1]) != "-M")) {
+        std::fprintf(stderr,
+            "SniffIHeartRadio - iHeart now-playing API tool\n"
+            "Usage: %s -S <url>   exhaustive API sniff (explore/diagnose)\n"
+            "       %s -M <url>   module test (exercise IHeartRadio resolve+poll)\n"
+            "Example: %s -S https://stream.revma.ihrhls.com/zc4366/hls.m3u8\n",
+            argv[0], argv[0], argv[0]);
+        return 2;
+    }
+    std::string mode = argv[1];
+    std::string url  = argv[2];
+    return (mode == "-M") ? runModuleTest(url) : runSniff(url);
+}
+
