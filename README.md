@@ -1,7 +1,4 @@
 # SniffIHeartRadio
-tandalone diagnostic utility that probes undocumented iHeartRadio API endpoints to identify and cache metadata sources for HLS streams.
-
-# SniffIHeartRadio
 SniffIHeartRadio.cpp is a standalone diagnostic utility that probes undocumented iHeartRadio API endpoints to identify and cache metadata sources for HLS streams.
 
 # Overview
