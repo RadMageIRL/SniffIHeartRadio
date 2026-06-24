@@ -1,6 +1,9 @@
 # SniffIHeartRadio
 SniffIHeartRadio.cpp is a standalone diagnostic utility that probes undocumented iHeartRadio API endpoints to identify and cache metadata sources for HLS streams.
 
+g++ -std=c++20 SniffIHeartRadio.cpp digi\src\IHeartRadio.cpp -o SniffIHeartRadio.exe -I digi\src -lwininet
+g++ -std=c++20 SniffIHeartRadio.cpp IHeartRadio.cpp -o SniffIHeartRadio.exe -lwininet
+
 # Overview
 
 This tool serves as an active prober rather than a passive network sniffer. It is designed to reverse-engineer iHeartRadio’s undocumented "now-playing" API endpoints by programmatically testing candidate URLs and analyzing the returned data. It is intended for development use to observe API behavior and automate the discovery of working metadata endpoints for the RE-MOCT project.
